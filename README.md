@@ -39,7 +39,7 @@
  دریافت کنید 
 </p>
 <p dir="rtl">
-<a href="https://github.com/payping/payping-paid-memberships-pro/releases" title="دانلود اخرین نسخه افزونه"><img width="70%" src="https://raw.githubusercontent.com/yeganehha/payping-insatll-help-asset-/master/plugins-EDD/download%20plugin.png" /></a>
+<a href="https://github.com/payping/plugins-paid-memberships-pro/releases" title="دانلود اخرین نسخه افزونه"><img width="70%" src="https://raw.githubusercontent.com/yeganehha/payping-insatll-help-asset-/master/plugins-EDD/download%20plugin.png" /></a>
 </p>
 <p dir="rtl">
 پس از دریافت فایل افزونه ، از طریق بارگذاری در صفحه اقدام به نصب (5) کنید 
