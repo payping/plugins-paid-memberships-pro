@@ -20,7 +20,7 @@ function pmpro_add_currency($currencies) {
 		'position' => 'left'
 	);
 	$currencies['IRR'] = array(
-		'name' => ریال,
+		'name' => 'ریال',
 		'symbol' => ' ریال ',
 		'position' => 'left'
 	);
