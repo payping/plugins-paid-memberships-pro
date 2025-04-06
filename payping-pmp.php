@@ -12,7 +12,43 @@ Author URI: https://payping.ir/
 if (!defined('ABSPATH')) {
     exit;
 }
+register_activation_hook(__FILE__, 'check_pmpro_dependency');
 
+function check_pmpro_dependency() {
+    require_once(ABSPATH . 'wp-admin/includes/plugin.php');
+
+    if (!is_plugin_active('paid-memberships-pro/paid-memberships-pro.php')) {
+        deactivate_plugins(plugin_basename(__FILE__));
+        wp_die(
+            __('این افزونه نیازمند افزونه Paid Memberships Pro است. لطفاً ابتدا آن را نصب و فعال کنید.', 'text-domain') . 
+            '<br><a href="' . admin_url('plugins.php') . '">' . __('بازگشت به صفحه افزونه‌ها', 'text-domain') . '</a>'
+        );
+    }
+}
+
+add_action('admin_init', 'pmpro_dependency_check_runtime');
+
+function pmpro_dependency_check_runtime() {
+    if (!is_plugin_active('paid-memberships-pro/paid-memberships-pro.php')) {
+        if (is_plugin_active(plugin_basename(__FILE__))) {
+            deactivate_plugins(plugin_basename(__FILE__));
+            add_action('admin_notices', 'pmpro_missing_notice');
+            if (isset($_GET['activate'])) {
+                unset($_GET['activate']);
+            }
+        }
+    }
+}
+
+function pmpro_missing_notice() {
+    ?>
+    <div class="notice notice-error is-dismissible">
+        <p>
+            <?php _e('افزونه شما به دلیل عدم وجود افزونه Paid Memberships Pro غیرفعال شد. لطفاً آن را نصب و فعال کنید.', 'text-domain'); ?>
+        </p>
+    </div>
+    <?php
+}
 // Include the gateway class
 require_once(plugin_dir_path(__FILE__) . 'includes/class-pmpro-payping-gateway.php');
 
