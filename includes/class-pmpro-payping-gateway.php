@@ -163,10 +163,17 @@ class PMProGateway_payping extends PMProGateway {
     public static function pmpro_checkout_before_change_membership_level($user_id, $morder)
     {
         global $wpdb, $discount_code_id;
-
+        
         //if no order, no need to pay
         if (empty($morder)) {
             return;
+        }
+        if( $morder->gateway === 'free' ) {
+
+            if (self::do_level_up($morder, $morder->code)) {
+                wp_redirect(pmpro_url('confirmation', '?level=' . $morder->membership_level->id));
+                exit;
+            }
         }
         $morder->status = 'pending';
         $morder->user_id = $user_id;
@@ -185,7 +192,7 @@ class PMProGateway_payping extends PMProGateway {
             // Execute the prepared query
             $wpdb->query($query);
         }
-
+        
         global $pmpro_currency;
 
         $amount = intval($morder->subtotal);
@@ -219,7 +226,7 @@ class PMProGateway_payping extends PMProGateway {
             ),
             'cookies' => array()
         );
-
+        
         $response = wp_remote_post('https://api.payping.ir/v3/pay', $args);
 
         if (is_wp_error($response)) {
