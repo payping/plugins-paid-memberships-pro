@@ -1,7 +1,7 @@
 <?php
 /*
 Plugin Name: PayPing for Paid Memberships Pro
-Version: 1.0.0
+Version: 1.0.1
 Description: افزونه درگاه پرداخت پی‌پینگ برای Paid Memberships Pro
 Plugin URI: https://www.payping.ir/
 Author: hadihosseini
