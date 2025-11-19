@@ -1,87 +1,115 @@
 <?php
 /**
- * Plugin Name: PayPing PMPro
- * Plugin URI: https://www.payping.ir/
- * Description: افزونه درگاه پرداخت پی‌پینگ برای Paid Memberships Pro
- * Version: 1.1.0
- * Requires at least: 4.0.0
- * Requires PHP: 7.3
- * Tested up to: 6.7.2
- * Author: PayPing PHP Team
- * Author URI: https://payping.ir/
- * Text Domain: payping-pmpro
- * License: GPLv3 or later
- * License URI: https://www.gnu.org/licenses/gpl-3.0.html
+ * Plugin Name:       PayPing Gateway for Paid Memberships Pro
+ * Plugin URI:        https://github.com/payping/pmpro-payping
+ * Description:       درگاه پرداخت پی‌پینگ برای افزونه Paid Memberships Pro – پشتیبانی کامل از API v3، تومان/ریال، تأیید خودکار تراکنش
+ * Version:           1.4.3
+ * Requires at least: 5.8
+ * Requires PHP:      7.4
+ * Tested up to:      6.7.2
+ * Author:            PayPing Development Team
+ * Author URI:        https://payping.ir
+ * License:           GPL v3 or later
+ * License URI:       https://www.gnu.org/licenses/gpl-3.0.html
+ * Text Domain:       payping-pmpro
+ * Domain Path:       /languages
+ * Tags:              payping, pmpro, paid memberships pro, درگاه پرداخت, عضویت, پی‌پینگ
  */
 
-// Prevent direct access to this file
-if (!defined('ABSPATH')) {
-    exit;
-}
-register_activation_hook(__FILE__, 'check_pmpro_dependency');
+defined('ABSPATH') || exit;
 
-function check_pmpro_dependency() {
-    require_once(ABSPATH . 'wp-admin/includes/plugin.php');
+// ثابت‌های مسیر
+define('PAYPING_PMPRO_BASENAME', plugin_basename(__FILE__));
+define('PAYPING_PMPRO_DIR', plugin_dir_path(__FILE__));
 
-    if (!is_plugin_active('paid-memberships-pro/paid-memberships-pro.php')) {
-        deactivate_plugins(plugin_basename(__FILE__));
-        wp_die(
-            __('این افزونه نیازمند افزونه Paid Memberships Pro است. لطفاً ابتدا آن را نصب و فعال کنید.', 'text-domain') . 
-            '<br><a href="' . admin_url('plugins.php') . '">' . __('بازگشت به صفحه افزونه‌ها', 'text-domain') . '</a>'
-        );
+// ------------------------------------------------------------------
+// 1. بررسی وابستگی به PMPro
+// ------------------------------------------------------------------
+add_action('admin_init', 'payping_pmpro_check_dependency');
+function payping_pmpro_check_dependency() {
+    if (!current_user_can('activate_plugins') || !is_admin()) {
+        return;
     }
-}
 
-add_action('admin_init', 'pmpro_dependency_check_runtime');
-
-function pmpro_dependency_check_runtime() {
-    if (!is_plugin_active('paid-memberships-pro/paid-memberships-pro.php')) {
-        if (is_plugin_active(plugin_basename(__FILE__))) {
-            deactivate_plugins(plugin_basename(__FILE__));
-            add_action('admin_notices', 'pmpro_missing_notice');
-            if (isset($_GET['activate'])) {
-                unset($_GET['activate']);
-            }
+    if (!class_exists('PMProGateway')) {
+        if (is_plugin_active(PAYPING_PMPRO_BASENAME)) {
+            deactivate_plugins(PAYPING_PMPRO_BASENAME);
+            add_action('admin_notices', 'payping_pmpro_missing_notice');
         }
     }
 }
 
-function pmpro_missing_notice() {
-    ?>
-    <div class="notice notice-error is-dismissible">
-        <p>
-            <?php _e('افزونه شما به دلیل عدم وجود افزونه Paid Memberships Pro غیرفعال شد. لطفاً آن را نصب و فعال کنید.', 'text-domain'); ?>
-        </p>
-    </div>
-    <?php
+function payping_pmpro_missing_notice() {
+    echo '<div class="notice notice-error is-dismissible"><p>';
+    echo '<strong>' . esc_html__('درگاه پی‌پینگ غیرفعال شد.', 'payping-pmpro') . '</strong><br>';
+    echo wp_kses_post(sprintf(
+        __('این افزونه نیازمند فعال بودن افزونه <strong>Paid Memberships Pro</strong> است.<br><a href="%s">جستجو و نصب PMPro</a>', 'payping-pmpro'),
+        esc_url(admin_url('plugin-install.php?s=paid+memberships+pro&tab=search&type=term'))
+    ));
+    echo '</p></div>';
 }
-// Include the gateway class
-require_once(plugin_dir_path(__FILE__) . 'includes/class-pmpro-payping-gateway.php');
 
-// Initialize the plugin
-add_action('plugins_loaded', 'load_payping_pmpro_class', 11);
-add_action('plugins_loaded', ['PMProGateway_payping', 'init'], 12);
+// ------------------------------------------------------------------
+// 2. بارگذاری کلاس درگاه
+// ------------------------------------------------------------------
+$gateway_file = PAYPING_PMPRO_DIR . 'includes/class-pmpro-payping-gateway.php';
+if (file_exists($gateway_file)) {
+    require_once $gateway_file;
+} else {
+    add_action('admin_notices', function() use ($gateway_file) {
+        echo '<div class="notice notice-error"><p>';
+        echo esc_html__('خطای بحرانی: فایل کلاس درگاه یافت نشد → ', 'payping-pmpro') . esc_html($gateway_file);
+        echo '</p></div>';
+    });
+}
 
-// Add Iranian currencies
-add_filter('pmpro_currencies', 'pmpro_add_currency');
-function pmpro_add_currency($currencies) {
-    $currencies['IRT'] =  array(
-        'name' => 'تومان',
-        'symbol' => ' تومان ',
-        'position' => 'left'
-    );
-    $currencies['IRR'] = array(
-        'name' => 'ریال',
-        'symbol' => ' ریال ',
-        'position' => 'left'
-    );
+// ------------------------------------------------------------------
+// 3. ارزهای ایرانی
+// ------------------------------------------------------------------
+add_filter('pmpro_currencies', 'payping_pmpro_add_iranian_currencies');
+function payping_pmpro_add_iranian_currencies($currencies) {
+    $currencies['IRT'] = [
+        'name'                => __('تومان ایران', 'payping-pmpro'),
+        'symbol'              => 'تومان',
+        'position'            => 'left',
+        'decimals'            => 0,
+        'thousands_separator'=> ',',
+        'decimal_separator'   => '.'
+    ];
+    $currencies['IRR'] = [
+        'name'                => __('ریال ایران', 'payping-pmpro'),
+        'symbol'              => 'ریال',
+        'position'            => 'left',
+        'decimals'            => 0,
+        'thousands_separator'=> ',',
+        'decimal_separator'   => '.'
+    ];
     return $currencies;
 }
 
-function load_payping_pmpro_class() {
-    if (class_exists('PMProGateway')) {
-        // Class will be loaded from includes/class-pmpro-payping-gateway.php
-        return true;
-    }
-    return false;
+// ------------------------------------------------------------------
+// 4. بارگذاری ترجمه
+// ------------------------------------------------------------------
+add_action('init', 'payping_pmpro_load_textdomain');
+function payping_pmpro_load_textdomain() {
+    load_plugin_textdomain('payping-pmpro', false, dirname(PAYPING_PMPRO_BASENAME) . '/languages');
 }
+
+// ------------------------------------------------------------------
+// 5. ثبت درگاه – مهم‌ترین قسمت! (باید زودتر از plugins_loaded اجرا شود)
+// ------------------------------------------------------------------
+
+// ثبت کلاس درگاه (این فیلتر باید قبل از لود PMPro اعمال شود)
+add_filter('pmpro_gateways_classes', function($classes) {
+    if (class_exists('PMProGateway_payping')) {
+        $classes['payping'] = 'PMProGateway_payping';
+    }
+    return $classes;
+});
+
+// اجرای init کلاس درگاه (بعد از ثبت کلاس)
+add_action('plugins_loaded', function() {
+    if (class_exists('PMProGateway') && class_exists('PMProGateway_payping') && method_exists('PMProGateway_payping', 'init')) {
+        PMProGateway_payping::init();
+    }
+}, 15); // زودتر از 20

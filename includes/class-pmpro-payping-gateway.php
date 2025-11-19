@@ -1,556 +1,268 @@
 <?php
-// If this file is called directly, abort.
-if (!defined('WPINC')) {
-    die;
-}
-
-// Include WordPress core
-if (!defined('ABSPATH')) {
-    /** Set up WordPress environment */
-    require_once(dirname(dirname(dirname(dirname(__FILE__)))) . '/wp-load.php');
-}
-
-// Make sure PMPro is loaded
-if (!class_exists('PMProGateway')) {
-    return;
-}
-
 /**
- * PayPing Payment Gateway integration for Paid Memberships Pro
- *
- * @package PayPing_PMP
- * @since 1.1.0
+ * Plugin Name:       PayPing Gateway for Paid Memberships Pro
+ * Description:       درگاه پرداخت پی‌پینگ برای افزونه Paid Memberships Pro
+ * Version:           1.3.1
+ * Author:            Your Name
+ * Text Domain:       payping-pmpro
+ * Domain Path:       /languages
+ * Requires at least: 5.6
+ * Requires PHP:      7.4
  */
-class PMProGateway_payping extends PMProGateway {
-    /**
-     * Gateway identifier
-     *
-     * @var string $gateway
-     */
-    protected $gateway;
 
-    /**
-     * Gateway environment
-     *
-     * @var string $gateway_environment
-     */
-    protected $gateway_environment;
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
 
-    /**
-     * Constructor
-     *
-     * @param string|null $gateway Gateway identifier
-     */
-    public function __construct($gateway = null) {
-        $this->gateway = $gateway;
-        $this->gateway_environment = function_exists('pmpro_getOption') ? pmpro_getOption('gateway_environment') : '';
-        return $this->gateway;
+final class PMProGateway_payping extends PMProGateway {
+
+    const GATEWAY_ID = 'payping';
+
+    public function __construct( $gateway = null ) {
+        $this->gateway = self::GATEWAY_ID;
+        parent::__construct( $this->gateway );
+        $this->gateway_environment = pmpro_getOption( 'gateway_environment' );
     }
 
-    /**
-     * Initialize the gateway
-     */
+    /* ------------------------------------------------------------------ */
+    /*  ثبت درگاه و تنظیمات                                              */
+    /* ------------------------------------------------------------------ */
     public static function init() {
-        // Check if WordPress core functions are available
-        if (!function_exists('add_filter') || !function_exists('add_action')) {
+        if ( ! function_exists( 'add_filter' ) ) {
             return;
         }
 
-        //make sure PayPing is a gateway option
-        add_filter('pmpro_gateways', [__CLASS__, 'pmpro_gateways']);
+        // اضافه کردن به لیست درگاه‌ها
+        add_filter( 'pmpro_gateways', [ __CLASS__, 'pmpro_gateways' ] );
+        add_filter( 'pmpro_payment_options', [ __CLASS__, 'pmpro_payment_options' ] );
+        add_filter( 'pmpro_payment_option_fields', [ __CLASS__, 'pmpro_payment_option_fields' ], 10, 2 );
 
-        //add fields to payment settings
-        add_filter('pmpro_payment_options', [__CLASS__, 'pmpro_payment_options']);
-        add_filter('pmpro_payment_option_fields', [__CLASS__, 'pmpro_payment_option_fields'], 10, 2);
-        
-        if (function_exists('pmpro_getOption')) {
-            $gateway = pmpro_getOption('gateway');
+        // مخفی کردن فیلدهای کارت اعتباری
+        add_filter( 'pmpro_include_billing_address_fields', '__return_false' );
+        add_filter( 'pmpro_include_payment_information_fields', '__return_false' );
+        add_filter( 'pmpro_required_billing_fields', [ __CLASS__, 'pmpro_required_billing_fields' ] );
 
-            if ($gateway == 'payping') {
-                add_action('pmpro_checkout_before_change_membership_level', [__CLASS__, 'pmpro_checkout_before_change_membership_level'], 10, 2);
-                add_filter('pmpro_include_billing_address_fields', '__return_false');
-                add_filter('pmpro_include_payment_information_fields', '__return_false');
-                add_filter('pmpro_required_billing_fields', [__CLASS__, 'pmpro_required_billing_fields']);
-            }
-        }
-
-        add_action('wp_ajax_nopriv_payping-ins', [__CLASS__, 'pmpro_wp_ajax_payping_ins']);
-        add_action('wp_ajax_payping-ins', [__CLASS__, 'pmpro_wp_ajax_payping_ins']);
+        // هندل کردن بازگشت از درگاه
+        add_action( 'wp_ajax_payping-ins', [ __CLASS__, 'handle_callback' ] );
+        add_action( 'wp_ajax_nopriv_payping-ins', [ __CLASS__, 'handle_callback' ] );
     }
 
-    /**
-     * Add PayPing to the list of available gateways
-     *
-     * @param array $gateways List of gateways
-     * @return array Modified list of gateways
-     */
-    public static function pmpro_gateways($gateways) {
-        if (empty($gateways['payping'])) {
-            if (function_exists('pmpro_getOption') && pmpro_getOption('payping_name') != '') {
-                $gateways['payping'] = pmpro_getOption('payping_name');
-            } else {
-                $gateways['payping'] = __('پی‌پینگ', 'payping-pmpro');
-            }
-        }
+    public static function pmpro_gateways( $gateways ) {
+        $gateways[ self::GATEWAY_ID ] = pmpro_getOption( 'payping_name' ) ?: __( 'پی‌پینگ', 'payping-pmpro' );
         return $gateways;
     }
 
-    /**
-     * Get gateway options
-     *
-     * @return array List of gateway options
-     */
-    public static function getGatewayOptions() {
-        $options = [
-            'payping_merchantid',
-            'payping_name',
-            'currency',
-            'tax_rate',
-        ];
-        return $options;
+    public static function pmpro_payment_options( $options ) {
+        return array_merge( $options, [ 'payping_merchantid', 'payping_name' ] );
     }
 
-    /**
-     * Add PayPing options to payment options
-     *
-     * @param array $options List of payment options
-     * @return array Modified list of payment options
-     */
-    public static function pmpro_payment_options($options) {
-        //get payping options
-        $payping_options = self::getGatewayOptions();
-        //merge with others.
-        $options = array_merge($payping_options, $options);
-        return $options;
-    }
-
-    /**
-     * Modify required billing fields
-     *
-     * @param array $fields List of required fields
-     * @return array Modified list of required fields
-     */
-    public static function pmpro_required_billing_fields($fields) {
-        unset($fields['bfirstname']);
-        unset($fields['blastname']);
-        unset($fields['baddress1']);
-        unset($fields['bcity']);
-        unset($fields['bstate']);
-        unset($fields['bzipcode']);
-        unset($fields['bphone']);
-        unset($fields['bemail']);
-        unset($fields['bcountry']);
-        unset($fields['CardType']);
-        unset($fields['AccountNumber']);
-        unset($fields['ExpirationMonth']);
-        unset($fields['ExpirationYear']);
-        unset($fields['CVV']);
-        return $fields;
-    }
-
-    /**
-     * Add PayPing payment option fields
-     *
-     * @param array $values Current values
-     * @param string $gateway Current gateway
-     */
-    public static function pmpro_payment_option_fields($values, $gateway) {
+    public static function pmpro_payment_option_fields( $values, $gateway ) {
+        if ( $gateway !== self::GATEWAY_ID ) {
+            return;
+        }
         ?>
-        <tr class="pmpro_settings_divider gateway gateway_payping" <?php if ($gateway != 'payping') { ?>style="display: none;"<?php } ?>>
-            <td colspan="2">
-                <?php echo esc_html__('تنظیمات پی‌پینگ', 'payping-pmpro'); ?>
+        <tr class="pmpro_settings_divider">
+            <td colspan="2"><strong><?php esc_html_e( 'تنظیمات درگاه پی‌پینگ', 'payping-pmpro' ); ?></strong></td>
+        </tr>
+        <tr>
+            <th scope="row"><label for="payping_merchantid"><?php esc_html_e( 'توکن پی‌پینگ:', 'payping-pmpro' ); ?></label></th>
+            <td>
+                <input type="text" id="payping_merchantid" name="payping_merchantid" size="60"
+                       value="<?php echo esc_attr( $values['payping_merchantid'] ?? '' ); ?>" />
+                <p class="description"><?php esc_html_e( 'توکن Bearer را از پنل پی‌پینگ دریافت کنید.', 'payping-pmpro' ); ?></p>
             </td>
         </tr>
-        <tr class="gateway gateway_payping" <?php if ($gateway != 'payping') { ?>style="display: none;"<?php } ?>>
-            <th scope="row" valign="top">
-                <label for="payping_merchantid"><?php echo esc_html__('توکن اتصال به پی‌پینگ:', 'payping-pmpro'); ?></label>
-            </th>
+        <tr>
+            <th scope="row"><label for="payping_name"><?php esc_html_e( 'عنوان درگاه:', 'payping-pmpro' ); ?></label></th>
             <td>
-                <input type="text" id="payping_merchantid" name="payping_merchantid" size="60" value="<?php echo esc_attr($values['payping_merchantid']); ?>" />
-            </td>
-        </tr>
-        <tr class="gateway gateway_payping" <?php if ($gateway != 'payping') { ?>style="display: none;"<?php } ?>>
-            <th scope="row" valign="top">
-                <label for="payping_name"><?php echo esc_html__('عنوان درگاه:', 'payping-pmpro'); ?></label>
-            </th>
-            <td>
-                <input type="text" id="payping_name" name="payping_name" size="60" value="<?php echo esc_attr($values['payping_name']); ?>" />
+                <input type="text" id="payping_name" name="payping_name" size="60"
+                       value="<?php echo esc_attr( $values['payping_name'] ?? '' ); ?>" />
             </td>
         </tr>
         <?php
     }
 
-    /**
-     * Get PayPing status message
-     *
-     * @param int $code Status code
-     * @return string Status message
-     */
-    public static function payping_status_message($code) {
-        switch ($code) {
-            case 200:
-                return __('عملیات با موفقیت انجام شد', 'payping-pmpro');
-            case 400:
-                return __('مشکلی در ارسال درخواست وجود دارد', 'payping-pmpro');
-            case 500:
-                return __('مشکلی در سرور رخ داده است', 'payping-pmpro');
-            case 503:
-                return __('سرور در حال حاضر قادر به پاسخگویی نمی‌باشد', 'payping-pmpro');
-            case 401:
-                return __('عدم دسترسی', 'payping-pmpro');
-            case 403:
-                return __('دسترسی غیر مجاز', 'payping-pmpro');
-            case 404:
-                return __('آیتم درخواستی مورد نظر موجود نمی‌باشد', 'payping-pmpro');
-            default:
-                return __('خطای نامشخص', 'payping-pmpro');
+    public static function pmpro_required_billing_fields( $fields ) {
+        $remove = [ 'bfirstname', 'blastname', 'baddress1', 'bcity', 'bstate', 'bzipcode', 'bphone', 'bemail', 'bcountry', 'CardType', 'AccountNumber', 'ExpirationMonth', 'ExpirationYear', 'CVV' ];
+        foreach ( $remove as $key ) {
+            unset( $fields[ $key ] );
         }
+        return $fields;
     }
 
-    /**
-     * Process checkout before changing membership level
-     *
-     * @param int $user_id User ID
-     * @param object $morder Order object
-     */
-    public static function pmpro_checkout_before_change_membership_level($user_id, $morder) {
-        global $wpdb, $discount_code_id;
-
-        //if no order, no need to pay
-        if (empty($morder)) {
-            return;
-        }
-        if( $morder->gateway === 'free' ) {
-
-            if (self::do_level_up($morder, $morder->code)) {
-                wp_redirect(pmpro_url('confirmation', '?level=' . $morder->membership_level->id));
-                exit;
-            }
-        }
-        $morder->status = 'pending';
-        $morder->user_id = $user_id;
-        
-        $morder->saveOrder();
-
-        //save discount code use
-        if (!empty($discount_code_id)) {
-            // Prepare the SQL query with placeholders
-            $query = $wpdb->prepare(
-                "INSERT INTO {$wpdb->pmpro_discount_codes_uses} (code_id, user_id, order_id, timestamp) VALUES (%d, %d, %d, now())",
-                $discount_code_id,
-                $user_id,
-                $morder->id
-            );
-
-            // Execute the prepared query
-            $wpdb->query($query);
-        }
-
-        global $pmpro_currency;
-
-        $amount = intval($morder->subtotal);
-        if ($pmpro_currency == 'IRR') {
-            $amount /= 10;
-        }
-        
-        $Message = null;
-        $data = array(
-            'amount' => $amount,
-            'returnUrl' => admin_url('admin-ajax.php') . "?action=payping-ins&_wpnonce=" . wp_create_nonce('payping_ins'),
-            'payerIdentity' => $morder->user_id,
-            'payerName' => wp_get_current_user()->display_name,
-            'description' => sprintf(__('پرداخت حق عضویت شماره : %s', 'payping-pmpro'), $morder->code),
-            'clientRefId' => $morder->code,
-            'nationalCode' => '',
-            'isReversible' => true
-        );
-        
-        $args = array(
-            'body' => wp_json_encode($data),
-            'timeout' => '45',
-            'redirection' => '5',
-            'httpsversion' => '1.0',
-            'blocking' => true,
-            'headers' => array(
-                'X-Platform' => 'paid-membership-pro',
-                'X-Platform-Version' => '1.1.0',
-                'Authorization' => 'Bearer ' . sanitize_text_field(pmpro_getOption('payping_merchantid')),
-                'Content-Type' => 'application/json',
-                'Accept' => 'application/json'
-            ),
-            'cookies' => array()
-        );
-
-        $response = wp_remote_post('https://api.payping.ir/v3/pay', $args);
-        
-        if (is_wp_error($response)) {
-            $error = $response->get_error_message();
-            $Message = sprintf(__('خطا در اتصال به درگاه: %s', 'payping-pmpro'), $error);
-            $morder->status = 'error';
-            $morder->notes .= $Message;
-            $morder->saveOrder();
-            wp_redirect(pmpro_url('checkout', '?level=' . $morder->membership_level->id . '&error=' . urlencode($Message)));
-            exit;
-        }
-
-        $http_status = wp_remote_retrieve_response_code($response);
-        $result = json_decode(wp_remote_retrieve_body($response));
-
-        
-        if ($http_status != 200 || empty($result)) {
-            if ($http_status == 400 && !empty($result->metaData->errors)) {
-                $Message = '';
-                foreach ($result->metaData->errors as $error) {
-                    $Message .= esc_html($error->message) . '<br/>';
-                }
-            } else {
-                $Message = self::payping_status_message($http_status);
-            }
-            $morder->status = 'error';
-            $morder->notes .= $Message;
-            $morder->saveOrder();
-            wp_redirect(pmpro_url('checkout', '?level=' . $morder->membership_level->id . '&error=' . urlencode($Message)));
-            exit;
-        }
-        
-        if (!empty($result->paymentCode)) {
-            $morder->notes .= "\n##PAYPING_CODE##:" . sanitize_text_field($result->paymentCode) . "\n";
-            $morder->saveOrder(); 
-        }
-
-        
-        if (!empty($result->url)) {
-            wp_redirect($result->url);
-            exit;
-        }
-    }
-
-    /**
-     * Process PayPing callback
-     */
-    public static function pmpro_wp_ajax_payping_ins() {
-       
-        $status = sanitize_text_field($_REQUEST['status']);
-        $paypingResponse = stripslashes($_REQUEST['data']);
-    
-		$responseData = json_decode($paypingResponse, true);
-
-        $order_code = $responseData['clientRefId'];
-        $morder = new MemberOrder($order_code);
-		$morder->getMembershipLevel();
-		$morder->getUser();
-
-        $payping_paymentCode = null;
-        if (!empty($morder->notes)) {
-            if (preg_match('/##PAYPING_CODE##:(.*?)\n/', $morder->notes, $matches)) {
-                $payping_paymentCode = trim($matches[1]);
-            }
-        }
-        
-        if ( $payping_paymentCode != $responseData['paymentCode'] ) {
-            $Message = 'کد پرداخت سفارش با مقدار بازگشتی از درگاه مطابقت ندارد!';
-            $morder->status = "error";
-            $morder->notes .= $Message;
-            $morder->cancel();
-            $morder->saveOrder();
-            wp_redirect(add_query_arg('invoice', $order_code, site_url('/checkout-pmp/membership-orders/')));
-        }
-        if ( $morder->total != $responseData['amount'] ) {
-            $Message = 'مبلغ سفارش با مقدار بارگشتی از درگاه پرداخت مطابقت ندارد!';
-            $morder->status = "error";
-            $morder->notes .= $Message;
-            $morder->cancel();
-            $morder->saveOrder();
-            wp_redirect(add_query_arg('invoice', $order_code, site_url('/checkout-pmp/membership-orders/')));
-        }
-        
-        if ($status == '0') {
-            $Message = 'تراکنش توسط کاربر لغو شد.';
-            $morder->status = "error";
-            $morder->notes .= $Message;
-            $morder->cancel();
-            $morder->saveOrder();
-            wp_redirect(add_query_arg('invoice', $order_code, site_url('/checkout-pmp/membership-orders/')));
-
-            exit;
-        } else if ($status == '1') {
-            $verify_data = array(
-                'paymentRefId' => $responseData['paymentRefId'],
-                'amount' => $responseData['amount'],
-                'paymentCode' => $payping_paymentCode
-            );
-            $response = wp_remote_post('https://api.payping.ir/v3/pay/verify', array(
-                'body'        => wp_json_encode($verify_data),
-                'headers'     => array(
-                    'Accept'        => 'application/json',
-                    'Authorization' => 'Bearer ' . pmpro_getOption('payping_merchantid'),
-                    'Cache-Control' => 'no-cache',
-                    'Content-Type'  => 'application/json'
-                ),
-                'timeout'     => 30,
-                'redirection' => 10,
-            ));
-
-            if (is_wp_error($response)) {
-                $error = $response->get_error_message();
-                $Message = 'خطا در تایید تراکنش: ' . $error;
-                $morder->status = "error";
-                $morder->notes .= $Message;
-                $morder->saveOrder();
-                wp_redirect(add_query_arg('invoice', $order_code, site_url('/checkout-pmp/membership-orders/')));
-            } else {
-                $status_code = wp_remote_retrieve_response_code($response);
-                $response_body = wp_remote_retrieve_body($response);
-                $response_data = json_decode($response_body, true);
-                
-                if ($status_code == 200) {
-                    if (isset($responseData['paymentRefId']) && $responseData['paymentRefId'] != '') {
-                        if (self::do_level_up($morder, $responseData['paymentRefId'])) {
-                            wp_redirect(pmpro_url('confirmation', '?level=' . $morder->membership_level->id));
-                            exit;
-                        }
-                    } else {
-                        $Message = 'متاسفانه سامانه قادر به دریافت کد پیگیری نمی باشد!' ;
-                    }
-                    
-                } elseif ($status_code == 409) {
-                    $code = $response_data['metaData']['code'];
-
-                    if ($code == 110) {
-                        if (self::do_level_up($morder, $responseData['paymentRefId'])) {
-                            wp_redirect(pmpro_url('confirmation', '?level=' . $morder->membership_level->id));
-                            exit;
-                        }
-                    } else {
-                        $Message = 'خطا در تایید تراکنش';
-                        $morder->status = "error";
-                        $morder->notes .= $Message;
-                        $morder->saveOrder();
-                        wp_redirect(pmpro_url("checkout", "?level=" . $morder->membership_id . "&error=" . urlencode($Message)));
-                        exit;
-                    }
-                } else {
-                    $Message = 'خطا در تایید تراکنش';
-                    $morder->status = "error";
-                    $morder->notes .= $Message;
-                    $morder->saveOrder();
-                    wp_redirect(pmpro_url("checkout", "?level=" . $morder->membership_id . "&error=" . urlencode($Message)));
-                    exit;
-                }
-            }
-            
-        }
-    }
-
-    /**
-     * Process level up
-     *
-     * @param object $morder Order object
-     * @param string $txn_id Transaction ID
-     */
-    public static function do_level_up(&$morder, $txn_id)
-    {
-        global $wpdb;
-        
-        //filter for level
-        $morder->membership_level = apply_filters('pmpro_inshandler_level', $morder->membership_level, $morder->user_id);
-        
-        //fix expiration date
-        if (!empty($morder->membership_level->expiration_number)) {
-            $enddate = "'".date('Y-m-d', strtotime('+ '.$morder->membership_level->expiration_number.' '.$morder->membership_level->expiration_period, current_time('timestamp')))."'";
-        } else {
-            $enddate = 'NULL';
-        }
-        
-        //get discount code
-        $morder->getDiscountCode();
-        if (!empty($morder->discount_code)) {
-            //update membership level
-            $morder->getMembershipLevel(true);
-            $discount_code_id = $morder->discount_code->id;
-        } else {
-            $discount_code_id = '';
-        }
-
-        //set the start date to current_time('mysql') but allow filters
-        $startdate = apply_filters('pmpro_checkout_start_date', "'".current_time('mysql')."'", $morder->user_id, $morder->membership_level);
-
-        //custom level to change user to
-        $custom_level = [
-            'user_id'         => $morder->user_id,
-            'membership_id'   => $morder->membership_level->id,
-            'code_id'         => $discount_code_id,
-            'initial_payment' => $morder->membership_level->initial_payment,
-            'billing_amount'  => $morder->membership_level->billing_amount,
-            'cycle_number'    => $morder->membership_level->cycle_number,
-            'cycle_period'    => $morder->membership_level->cycle_period,
-            'billing_limit'   => $morder->membership_level->billing_limit,
-            'trial_amount'    => $morder->membership_level->trial_amount,
-            'trial_limit'     => $morder->membership_level->trial_limit,
-            'startdate'       => $startdate,
-            'enddate'         => $enddate,
-        ];
-       
-        global $pmpro_error;
-        if (!empty($pmpro_error)) {
-            echo $pmpro_error;
-            inslog($pmpro_error);
-        }
-        
-        if (pmpro_changeMembershipLevel($custom_level, $morder->user_id) !== false) {
-            //update order status and transaction ids
-            $morder->status = 'success';
-            $morder->payment_transaction_id = $txn_id;
-            $morder->subscription_transaction_id = '';
-            $morder->notes .= 'تراکنش موفق - کد پیگیری: ' . $txn_id;
-            $morder->saveOrder();
-
-            //add discount code use
-            if (!empty($discount_code) && !empty($use_discount_code)) {
-                $wpdb->query("INSERT INTO $wpdb->pmpro_discount_codes_uses (code_id, user_id, order_id, timestamp) VALUES('".$discount_code_id."', '".$morder->user_id."', '".$morder->id."', '".current_time('mysql')."')");
-            }
-
-            //save first and last name fields
-            if (!empty($_POST['first_name'])) {
-                $old_firstname = get_user_meta($morder->user_id, 'first_name', true);
-                if (!empty($old_firstname)) {
-                    update_user_meta($morder->user_id, 'first_name', $_POST['first_name']);
-                }
-            }
-            if (!empty($_POST['last_name'])) {
-                $old_lastname = get_user_meta($morder->user_id, 'last_name', true);
-                if (!empty($old_lastname)) {
-                    update_user_meta($morder->user_id, 'last_name', $_POST['last_name']);
-                }
-            }
-
-            //hook
-            //do_action('pmpro_after_checkout', $morder->user_id);
-
-            //setup some values for the emails
-            if (!empty($morder)) {
-                $invoice = new MemberOrder($morder->id);
-            } else {
-                $invoice = null;
-            }
-
-            $user = get_userdata(intval($morder->user_id));
-            if (empty($user)) {
-                return false;
-            }
-
-            $user->membership_level = $morder->membership_level;  //make sure they have the right level info
-            //send email to member
-            $pmproemail = new PMProEmail();
-            $pmproemail->sendCheckoutEmail($user, $invoice);
-
-            //send email to admin
-            $pmproemail = new PMProEmail();
-            $pmproemail->sendCheckoutAdminEmail($user, $invoice);
-
-            return true;
-        } else {
+    /* ------------------------------------------------------------------ */
+    /*  پردازش پرداخت در زمان تسویه حساب                                  */
+    /* ------------------------------------------------------------------ */
+    public function process( &$order ) {
+        if ( empty( $order ) || ! $order->code ) {
             return false;
         }
+
+        $token = trim( pmpro_getOption( 'payping_merchantid' ) );
+        if ( empty( $token ) ) {
+            $order->error = __( 'توکن پی‌پینگ تنظیم نشده است.', 'payping-pmpro' );
+            return false;
+        }
+
+        $amount = $this->convert_to_rials( $order->InitialPayment );
+
+        $payload = [
+            'amount'        => (int) $amount,
+            'payerIdentity' => (string) $order->user_id,
+            'payerName'     => trim( $order->FirstName . ' ' . $order->LastName ),
+            'description'   => sprintf( __( 'پرداخت عضویت – سفارش %s', 'payping-pmpro' ), $order->code ),
+            'clientRefId'   => $order->code,
+            'returnUrl'     => admin_url( 'admin-ajax.php?action=payping-ins' ),
+            'isReversible'  => true,
+        ];
+
+        $response = wp_remote_post( 'https://api.payping.ir/v3/pay', [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type'  => 'application/json',
+                'Accept'        => 'application/json',
+            ],
+            'body'    => wp_json_encode( $payload ),
+            'timeout' => 30,
+        ] );
+
+        if ( is_wp_error( $response ) ) {
+            $order->error = 'خطا در ارتباط با پی‌پینگ: ' . $response->get_error_message();
+            pmpro_log( 'PayPing connection error: ' . $response->get_error_message() );
+            return false;
+        }
+
+        $code = wp_remote_retrieve_response_code( $response );
+        $body = json_decode( wp_remote_retrieve_body( $response ) );
+
+        if ( $code !== 200 || empty( $body->paymentCode ) || empty( $body->url ) ) {
+            $msg = $body->metaData->errors[0]->message ?? __( 'خطای نامشخص از پی‌پینگ', 'payping-pmpro' );
+            $order->error = $msg;
+            pmpro_log( "PayPing create failed (HTTP $code): " . wp_json_encode( $body ) );
+            return false;
+        }
+
+        // ذخیره کد پرداخت برای تأیید در callback
+        $order->notes .= "\n##PAYPING_CODE##:" . sanitize_text_field( $body->paymentCode ) . "\n";
+        $order->saveOrder();
+
+        wp_redirect( $body->url );
+        exit;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  بازگشت از درگاه (Callback)                                        */
+    /* ------------------------------------------------------------------ */
+    public static function handle_callback() {
+        if ( empty( $_REQUEST['status'] ) || empty( $_REQUEST['data'] ) ) {
+            wp_die( 'داده‌های بازگشت نامعتبر است.' );
+        }
+
+        $status = sanitize_text_field( $_REQUEST['status'] );
+        $data   = json_decode( wp_unslash( $_REQUEST['data'] ), true );
+
+        if ( ! $data || empty( $data['clientRefId'] ) ) {
+            wp_die( 'اطلاعات پرداخت معتبر نیست.' );
+        }
+
+        $order_code = sanitize_text_field( $data['clientRefId'] );
+        $order      = pmpro_getOrderByCode( $order_code );
+
+        if ( ! $order ) {
+            wp_die( 'سفارش یافت نشد.' );
+        }
+
+        // بررسی تطابق paymentCode
+        preg_match( '/##PAYPING_CODE##:(.*?)\n/', $order->notes, $m );
+        if ( ( $m[1] ?? '' ) !== ( $data['paymentCode'] ?? '' ) ) {
+            $order->status = 'error';
+            $order->notes .= "\n[PayPing] کد پرداخت مطابقت ندارد.";
+            $order->saveOrder();
+            wp_redirect( pmpro_url( 'invoice', [ 'invoice' => $order_code ] ) );
+            exit;
+        }
+
+        // کاربر لغو کرده
+        if ( $status !== '1' ) {
+            $order->status = 'cancelled';
+            $order->notes .= "\n[PayPing] پرداخت لغو شد.";
+            $order->saveOrder();
+            wp_redirect( pmpro_url( 'invoice', [ 'invoice' => $order_code ] ) );
+            exit;
+        }
+
+        // تأیید تراکنش با سرور پی‌پینگ
+        $token = trim( pmpro_getOption( 'payping_merchantid' ) );
+        $verify = wp_remote_post( 'https://api.payping.ir/v3/pay/verify', [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type'  => 'application/json',
+            ],
+            'body' => wp_json_encode( [
+                'paymentRefId' => $data['paymentRefId'],
+                'amount'       => $data['amount'],
+                'paymentCode'  => $data['paymentCode'],
+            ] ),
+            'timeout' => 30,
+        ] );
+
+        $verified = false;
+        if ( ! is_wp_error( $verify ) ) {
+            $vcode = wp_remote_retrieve_response_code( $verify );
+            $vbody = json_decode( wp_remote_retrieve_body( $verify ), true );
+            if ( $vcode === 200 || ( $vcode === 409 && ( $vbody['metaData']['code'] ?? 0 ) == 110 ) ) {
+                $verified = true;
+            }
+        }
+
+        if ( ! $verified ) {
+            $order->status = 'error';
+            $order->notes .= "\n[PayPing] تأیید پرداخت ناموفق بود.";
+            $order->saveOrder();
+            wp_redirect( pmpro_url( 'checkout', [ 'level' => $order->membership_level->id, 'error' => 'پرداخت تأیید نشد.' ] ) );
+            exit;
+        }
+
+        // پرداخت موفق
+        $order->status                 = 'success';
+        $order->payment_transaction_id = sanitize_text_field( $data['paymentRefId'] );
+        $order->notes                 .= "\n[PayPing] پرداخت موفق – کد پیگیری: " . $data['paymentRefId'];
+        $order->saveOrder();
+
+        // تغییر سطح عضویت کاربر
+        $level_id = $order->membership_level->id;
+        pmpro_changeMembershipLevel( $level_id, $order->user_id, 'success', $order->id );
+
+        // ارسال ایمیل‌های PMPro
+        do_action( 'pmpro_after_checkout', $order->user_id, $order );
+
+        wp_redirect( pmpro_url( 'confirmation', [ 'level' => $level_id ] ) );
+        exit;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  تبدیل مبلغ به ریال (PayPing فقط ریال قبول می‌کند)                 */
+    /* ------------------------------------------------------------------ */
+    private function convert_to_rials( $amount ) {
+        $currency = strtoupper( pmpro_getOption( 'currency' ) );
+        if ( $currency === 'IRR' ) {
+            return (int) round( $amount );           // ریال
+        }
+        return (int) round( $amount * 10 );          // تومان → ریال
     }
 }
+
+/* ------------------------------------------------------------------ */
+/*  ثبت نهایی درگاه                                                    */
+/* ------------------------------------------------------------------ */
+add_action( 'plugins_loaded', function () {
+    if ( class_exists( 'PMProGateway' ) ) {
+        PMProGateway_payping::init();
+
+        // ثبت کلاس درگاه (مهم برای PMPro ≥2.0)
+        add_filter( 'pmpro_gateways_classes', function ( $classes ) {
+            $classes[ PMProGateway_payping::GATEWAY_ID ] = 'PMProGateway_payping';
+            return $classes;
+        } );
+    }
+} );
